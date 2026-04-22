@@ -1,12 +1,13 @@
 """
-Stage 1: Same agent, now backed by an Azure OpenAI / Foundry model deployment.
+Stage 1: Same agent, but using a model deployed in Microsoft Foundry
+(Azure OpenAI) instead of a local SLM.
 
-Only the model client changes — the tool-calling agent flow stays the same.
+Only the chat client changes — the tool-calling agent code is identical to Stage 0.
 
 Prerequisites:
-    - An Azure OpenAI or Foundry model deployment
-    - `az login`
-    - `.env` with:
+    - An Azure OpenAI / Foundry model deployment
+    - `az login` (uses DefaultAzureCredential)
+    - .env with:
         AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com
         AZURE_AI_MODEL_DEPLOYMENT_NAME=gpt-5.2
 
@@ -19,27 +20,19 @@ import logging
 import os
 from datetime import date
 
-import httpx
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from dotenv import load_dotenv
+from langchain.agents import create_agent
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
+from rich.console import Console
+from rich.logging import RichHandler
+from rich.markdown import Markdown
 
 load_dotenv(override=True)
 
-logging.basicConfig(level=logging.WARNING, format="%(message)s")
+console = Console()
 logger = logging.getLogger("stage1")
-logger.setLevel(logging.INFO)
-
-
-class _AzureTokenAuth(httpx.Auth):
-    def __init__(self, provider):
-        self._provider = provider
-
-    def auth_flow(self, request):
-        request.headers["Authorization"] = f"Bearer {self._provider()}"
-        yield request
 
 
 @tool
@@ -51,58 +44,44 @@ def get_enrollment_deadline_info() -> dict:
         "benefits_enrollment_closes": "2026-11-30",
     }
 
-
-def _extract_assistant_text(result: dict) -> str:
-    messages = result.get("messages", []) if isinstance(result, dict) else []
-    for msg in reversed(messages):
-        if getattr(msg, "type", "") != "ai":
-            continue
-        content = getattr(msg, "content", "")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, str):
-                    parts.append(item)
-                elif isinstance(item, dict) and isinstance(item.get("text"), str):
-                    parts.append(item["text"])
-            if parts:
-                return "\n".join(parts)
-    return ""
-
-
 async def main() -> None:
     credential = DefaultAzureCredential()
-    token_provider = get_bearer_token_provider(
-        credential, "https://cognitiveservices.azure.com/.default"
-    )
-    http_client = httpx.Client(auth=_AzureTokenAuth(token_provider), timeout=120.0)
+    try:
+        token_provider = get_bearer_token_provider(
+            credential, "https://cognitiveservices.azure.com/.default"
+        )
 
-    llm = ChatOpenAI(
-        base_url=f"{os.environ['AZURE_OPENAI_ENDPOINT'].rstrip('/')}/openai/v1",
-        api_key="placeholder",
-        model=os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"],
-        http_client=http_client,
-    )
+        client = ChatOpenAI(
+            base_url=f"{os.environ['AZURE_OPENAI_ENDPOINT'].rstrip('/')}/openai/v1/",
+            api_key=token_provider,
+            model=os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"],
+        )
 
-    agent = create_react_agent(
-        llm,
-        [get_enrollment_deadline_info],
-        prompt=(
-            f"You are an internal HR helper. Today's date is {date.today().isoformat()}. "
-            "Use the available tools to answer questions about benefits enrollment timing. "
-            "Always ground your answers in tool results."
-        ),
-    )
+        agent = create_agent(
+            model=client,
+            tools=[get_enrollment_deadline_info],
+            system_prompt=(
+                f"You are an internal HR helper. Today's date is {date.today().isoformat()}. "
+                "Use the available tools to answer questions about benefits enrollment timing. "
+                "Always ground your answers in tool results."
+            ),
+        )
 
-    result = await agent.ainvoke(
-        {"messages": [("user", "When does benefits enrollment open?")]}
-    )
-    print("\n--- Agent answer ---")
-    print(_extract_assistant_text(result))
-    http_client.close()
+        response = (
+            await agent.ainvoke({"messages": [{"role": "user", "content": "When does benefits enrollment open?"}]})
+        )["messages"][-1]
+        console.print("\n[bold]Agent answer:[/bold]")
+        console.print(Markdown(response.text))
+    finally:
+        credential.close()
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(message)s",
+        handlers=[RichHandler(console=console, show_path=False)],
+    )
+    logging.getLogger("azure.identity").setLevel(logging.WARNING)
+    logging.getLogger("azure.core").setLevel(logging.WARNING)
     asyncio.run(main())

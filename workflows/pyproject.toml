@@ -1,24 +1,17 @@
 [project]
-name = "foundry-hosted-langchain-demos"
+name = "foundry-hosted-langchain-workflow-demos"
 version = "0.1.0"
-description = "LangGraph-first hosted agent demos for Microsoft Foundry"
+description = "LangGraph workflow demos for Microsoft Foundry"
 requires-python = ">=3.12"
 dependencies = [
-    "aiohttp",
     "azure-ai-agentserver-langgraph==1.0.0b14",
-    "azure-ai-projects>=2.0.1",
     "azure-identity>=1.25.3",
     "azure-monitor-opentelemetry>=1.8.4",
-    "azure-search-documents>=11.6.0",
     "httpx>=0.28.1",
-    "langchain>=1.2.15",
-    "langchain-mcp-adapters==0.1.11",
     "langchain-openai>=0.3.0",
     "langgraph>=0.2.0",
     "python-dotenv==1.1.1",
-    "rich>=14.0.0",
     "starlette<1.0.0",  # azure-ai-agentserver uses deprecated on_event removed in 1.0
-    "websockets>=12.0",
 ]
 
 [tool.uv]

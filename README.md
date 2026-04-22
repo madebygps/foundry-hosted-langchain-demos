@@ -7,7 +7,9 @@ LangGraph-first demos for Microsoft Foundry that mirror the structure and teachi
 - **Stage 0:** a fully local tool-calling agent with Ollama
 - **Stage 1:** the same agent backed by an Azure OpenAI / Foundry model deployment
 - **Stage 2:** grounding with **Foundry IQ** through Azure AI Search
+- **Stage 3:** toolbox tools through **Foundry Toolbox**
 - **Hosted path:** a Foundry-hosted agent built with **LangGraph**, with toolbox tools and tracing
+- **Workflows:** LangGraph workflows running as a separate Foundry-hosted service
 
 This initial version is **LangGraph-first** while staying under the broader “LangChain” umbrella Pamela described.
 
@@ -20,10 +22,15 @@ The repo intentionally follows Pamela's sample closely:
 - `stage2_foundry_iq.py`
 - `stage2_foundry_iq_retrieve.py`
 - `stage2_foundry_iq_workaround.py`
-- `main.py`
+- `stage3_foundry_toolbox.py`
+- `main.py` — hosted agent entry point
+- `agent.yaml` — hosted agent configuration
+- `azure.yaml` — azd service definitions (agent + workflow)
+- `call_deployed_agent.py` — invoke a deployed agent from the CLI
 - `infra/`
 - `data/index-data/`
 - `scripts/`
+- `workflows/` — LangGraph workflow demos (separate hosted service)
 
 ## Prerequisites
 
@@ -67,6 +74,12 @@ uv run python stage2_foundry_iq_workaround.py
 uv run python stage2_foundry_iq_retrieve.py
 ```
 
+After creating the toolbox with the deploy steps below, you can also run:
+
+```bash
+uv run python stage3_foundry_toolbox.py
+```
+
 ## Deploy the hosted agent
 
 ```bash
@@ -98,6 +111,21 @@ Invoke from another terminal:
 ```bash
 azd ai agent invoke --local "What PerksPlus benefits are there, and when do I need to enroll by?"
 ```
+
+Or call a deployed agent via the SDK:
+
+```bash
+uv run python call_deployed_agent.py "What PerksPlus benefits are there?"
+```
+
+## Workflows
+
+The `workflows/` directory is deployed as a separate Foundry-hosted service and demonstrates LangGraph workflows:
+
+- `workflows/simple_workflow.py` — pure data-transformation pipeline (no LLM)
+- `workflows/stage1_foundry_model.py` — workflow backed by a Foundry model
+- `workflows/workflow_as_agent.py` — writer → formatter pipeline with streaming
+- `workflows/main.py` — hosted workflow entry point
 
 ## Evaluation scripts
 

@@ -16,10 +16,10 @@ import httpx
 from azure.ai.agentserver.langgraph import from_langgraph
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from dotenv import load_dotenv
+from langchain.agents import create_agent
 from langchain_core.tools import tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
 from pydantic import Field
 
 load_dotenv(dotenv_path=".env", override=True)
@@ -247,7 +247,7 @@ async def _build_agent():
         get_current_date,
         *toolbox_tools,
     ]
-    return create_react_agent(llm, tools, prompt=SYSTEM_PROMPT)
+    return create_agent(llm, tools, system_prompt=SYSTEM_PROMPT)
 
 
 async def _get_agent():

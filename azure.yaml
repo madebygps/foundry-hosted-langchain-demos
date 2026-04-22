@@ -28,6 +28,20 @@ services:
                     capacity: 10
                     name: GlobalStandard
             startupCommand: python main.py
+    hosted-langgraph-workflow:
+        project: ./workflows
+        host: azure.ai.agent
+        language: docker
+        docker:
+            remoteBuild: true
+        config:
+            container:
+                resources:
+                    cpu: "1"
+                    memory: 2Gi
+                scale:
+                    maxReplicas: 1
+            startupCommand: python main.py
 infra:
     provider: bicep
     path: ./infra

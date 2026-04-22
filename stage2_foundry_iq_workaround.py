@@ -23,20 +23,22 @@ from typing import Annotated
 import httpx
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from dotenv import load_dotenv
+from langchain.agents import create_agent
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
 from pydantic import Field
+from rich.console import Console
+from rich.logging import RichHandler
+from rich.markdown import Markdown
 
 load_dotenv(override=True)
 
-logging.basicConfig(level=logging.WARNING, format="%(message)s")
-logger = logging.getLogger("stage2-workaround")
-logger.setLevel(logging.INFO)
+console = Console()
+logger = logging.getLogger("stage2")
 
 
 class _AzureTokenAuth(httpx.Auth):
-    def __init__(self, provider):
+    def __init__(self, provider) -> None:
         self._provider = provider
 
     def auth_flow(self, request):
@@ -44,17 +46,27 @@ class _AzureTokenAuth(httpx.Auth):
         yield request
 
 
+@tool
+def get_enrollment_deadline_info() -> dict:
+    """Return enrollment timeline details for health insurance plans."""
+    logger.info("[tool] get_enrollment_deadline_info()")
+    return {
+        "benefits_enrollment_opens": "2026-11-11",
+        "benefits_enrollment_closes": "2026-11-30",
+    }
+
+
 class KnowledgeBaseMCPTool:
-    """Manual MCP wrapper for the Azure AI Search KB endpoint."""
+    """Manual MCP wrapper for the Azure AI Search knowledge-base endpoint."""
 
     def __init__(self, http_client: httpx.Client, mcp_url: str) -> None:
         self._http_client = http_client
         self._mcp_url = mcp_url
-        self._initialized = False
         self._headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         }
+        self._initialized = False
 
     def _ensure_initialized(self) -> None:
         if self._initialized:
@@ -80,7 +92,22 @@ class KnowledgeBaseMCPTool:
         ).raise_for_status()
         self._initialized = True
 
-    def retrieve(self, queries: list[str]) -> str:
+    def retrieve(
+        self,
+        queries: Annotated[
+            list[str],
+            Field(
+                description=(
+                    "1 to 4 concise search queries (max ~12 words each). "
+                    "Use alternate wording as separate entries."
+                ),
+                min_length=1,
+                max_length=4,
+            ),
+        ],
+    ) -> str:
+        """Search the Zava company knowledge base for HR policies and benefits."""
+        logger.info("[tool] knowledge_base_retrieve(%s)", queries)
         self._ensure_initialized()
         response = self._http_client.post(
             self._mcp_url,
@@ -113,102 +140,72 @@ class KnowledgeBaseMCPTool:
         return "No results found."
 
 
-@tool
-def get_enrollment_deadline_info() -> dict:
-    """Return enrollment timeline details for health insurance plans."""
-    logger.info("[tool] get_enrollment_deadline_info()")
-    return {
-        "benefits_enrollment_opens": "2026-11-11",
-        "benefits_enrollment_closes": "2026-11-30",
-    }
-
-
-def _extract_assistant_text(result: dict) -> str:
-    messages = result.get("messages", []) if isinstance(result, dict) else []
-    for msg in reversed(messages):
-        if getattr(msg, "type", "") != "ai":
-            continue
-        content = getattr(msg, "content", "")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, str):
-                    parts.append(item)
-                elif isinstance(item, dict) and isinstance(item.get("text"), str):
-                    parts.append(item["text"])
-            if parts:
-                return "\n".join(parts)
-    return ""
-
-
 async def main() -> None:
     credential = DefaultAzureCredential()
-    token_provider = get_bearer_token_provider(
-        credential, "https://cognitiveservices.azure.com/.default"
-    )
-    http_client = httpx.Client(auth=_AzureTokenAuth(token_provider), timeout=120.0)
+    search_http_client = None
+    try:
+        aoai_token_provider = get_bearer_token_provider(
+            credential, "https://cognitiveservices.azure.com/.default"
+        )
+        client = ChatOpenAI(
+            base_url=f"{os.environ['AZURE_OPENAI_ENDPOINT'].rstrip('/')}/openai/v1/",
+            api_key=aoai_token_provider,
+            model=os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"],
+        )
 
-    llm = ChatOpenAI(
-        base_url=f"{os.environ['AZURE_OPENAI_ENDPOINT'].rstrip('/')}/openai/v1",
-        api_key="placeholder",
-        model=os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"],
-        http_client=http_client,
-    )
-
-    search_token_provider = get_bearer_token_provider(
-        credential, "https://search.azure.com/.default"
-    )
-    search_http_client = httpx.Client(
-        auth=_AzureTokenAuth(search_token_provider),
-        timeout=httpx.Timeout(30.0, read=300.0),
-    )
-    kb_mcp_tool = KnowledgeBaseMCPTool(
-        search_http_client,
-        (
-            f"{os.environ['AZURE_AI_SEARCH_SERVICE_ENDPOINT'].rstrip('/')}"
-            f"/knowledgebases/{os.environ['AZURE_AI_SEARCH_KNOWLEDGE_BASE_NAME']}"
-            f"/mcp?api-version=2025-11-01-Preview"
-        ),
-    )
-
-    @tool
-    def knowledge_base_retrieve(
-        queries: Annotated[
-            list[str],
-            Field(
-                description=(
-                    "1 to 4 concise search queries (max ~12 words each). "
-                    "Use alternate wording as separate entries."
-                ),
-                min_length=1,
-                max_length=4,
+        search_token_provider = get_bearer_token_provider(
+            credential, "https://search.azure.com/.default"
+        )
+        search_http_client = httpx.Client(
+            auth=_AzureTokenAuth(search_token_provider),
+            timeout=httpx.Timeout(30.0, read=300.0),
+        )
+        kb_tool = KnowledgeBaseMCPTool(
+            search_http_client,
+            (
+                f"{os.environ['AZURE_AI_SEARCH_SERVICE_ENDPOINT'].rstrip('/')}"
+                f"/knowledgebases/{os.environ['AZURE_AI_SEARCH_KNOWLEDGE_BASE_NAME']}"
+                f"/mcp?api-version=2025-11-01-Preview"
             ),
-        ],
-    ) -> str:
-        """Search the Zava company knowledge base for HR policies and benefits."""
-        logger.info("[tool] knowledge_base_retrieve(%s)", queries)
-        return kb_mcp_tool.retrieve(queries)
+        )
 
-    agent = create_react_agent(
-        llm,
-        [get_enrollment_deadline_info, knowledge_base_retrieve],
-        prompt=(
-            f"You are an internal HR helper for Zava. Today's date is {date.today().isoformat()}. "
-            "Use the knowledge-base retrieve tool to answer questions about HR policies, benefits, "
-            "and company information. Use get_enrollment_deadline_info for enrollment timing."
-        ),
-    )
+        agent = create_agent(
+            model=client,
+            tools=[kb_tool.retrieve, get_enrollment_deadline_info],
+            system_prompt=(
+                f"You are an internal HR helper for Zava. Today's date is {date.today().isoformat()}. "
+                "Use the knowledge-base retrieve tool to answer questions about HR policies, benefits, "
+                "and company information. Use get_enrollment_deadline_info for enrollment timing. "
+                "If you cannot answer from the tools, say so clearly."
+            ),
+        )
 
-    result = await agent.ainvoke(
-        {"messages": [("user", "What PerksPlus benefits are there, and when do I need to enroll by?")]}
-    )
-    print("\n--- Agent answer ---")
-    print(_extract_assistant_text(result))
-    search_http_client.close()
-    http_client.close()
+        response = (
+            await agent.ainvoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "What PerksPlus benefits are there, and when do I need to enroll by?",
+                        }
+                    ]
+                }
+            )
+        )["messages"][-1]
+        console.print("\n[bold]Agent answer:[/bold]")
+        console.print(Markdown(response.text))
+    finally:
+        if search_http_client is not None:
+            search_http_client.close()
+        credential.close()
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(message)s",
+        handlers=[RichHandler(console=console, show_path=False)],
+    )
+    logging.getLogger("azure.identity").setLevel(logging.WARNING)
+    logging.getLogger("azure.core").setLevel(logging.WARNING)
     asyncio.run(main())
