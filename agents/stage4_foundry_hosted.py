@@ -39,7 +39,24 @@ load_dotenv(override=True)
 logger = logging.getLogger("hr-agent")
 logger.setLevel(logging.INFO)
 
-if not os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING"):
+# ── OpenTelemetry tracing ───────────────────────────────────────────
+# Emit LangChain/LangGraph spans (tool calls, LLM invocations, graph nodes)
+# to Application Insights so they appear alongside the agentserver HTTP traces.
+_appinsights_conn = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
+if _appinsights_conn:
+    try:
+        from langchain_azure_ai.callbacks.tracers import enable_auto_tracing
+
+        enable_auto_tracing(
+            connection_string=_appinsights_conn,
+            auto_configure_azure_monitor=True,
+            enable_content_recording=False,
+            trace_all_langgraph_nodes=True,
+        )
+        logger.info("LangChain OpenTelemetry tracing enabled (content recording off)")
+    except Exception as exc:
+        logger.warning("Failed to enable LangChain tracing: %s", exc)
+else:
     logger.warning(
         "APPLICATIONINSIGHTS_CONNECTION_STRING not set — traces will not be sent to "
         "Application Insights. Set it for local telemetry; hosted containers inject it automatically."

@@ -30,6 +30,24 @@ load_dotenv(dotenv_path="../.env", override=True)
 logger = logging.getLogger("workflow-agent")
 logger.setLevel(logging.INFO)
 
+# ── OpenTelemetry tracing ───────────────────────────────────────────
+_appinsights_conn = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
+if _appinsights_conn:
+    try:
+        from langchain_azure_ai.callbacks.tracers import enable_auto_tracing
+
+        enable_auto_tracing(
+            connection_string=_appinsights_conn,
+            auto_configure_azure_monitor=True,
+            enable_content_recording=False,
+            trace_all_langgraph_nodes=True,
+        )
+        logger.info("LangChain OpenTelemetry tracing enabled (content recording off)")
+    except Exception as exc:
+        logger.warning("Failed to enable LangChain tracing: %s", exc)
+else:
+    logger.warning("APPLICATIONINSIGHTS_CONNECTION_STRING not set — no LangChain tracing")
+
 PROJECT_ENDPOINT = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
 MODEL_DEPLOYMENT_NAME = os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"]
 
