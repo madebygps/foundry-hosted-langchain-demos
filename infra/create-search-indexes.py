@@ -1,12 +1,11 @@
 """Create Azure AI Search indexes and upload sample data for Foundry IQ demos."""
 
-import argparse
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any
 
-from azure.core.credentials import AzureKeyCredential
 from azure.identity.aio import DefaultAzureCredential
 from azure.search.documents.aio import SearchClient
 from azure.search.documents.indexes.aio import SearchIndexClient
@@ -21,21 +20,9 @@ from azure.search.documents.indexes.models import (
     SearchIndexKnowledgeSource,
     SearchIndexKnowledgeSourceParameters,
 )
+from dotenv import load_dotenv
 
-
-def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments."""
-    parser = argparse.ArgumentParser(description="Create Azure AI Search indexes and upload documents")
-    parser.add_argument("--endpoint", required=True, help="Azure AI Search endpoint")
-    parser.add_argument("--admin-key", default="", help="Azure AI Search admin key (optional)")
-    parser.add_argument("--openai-endpoint", default="", help="Azure OpenAI endpoint for vectorizer resource_url")
-    parser.add_argument(
-        "--openai-model-deployment",
-        default="",
-        help="Azure OpenAI model deployment for KB query planning",
-    )
-    parser.add_argument("--data-dir", default="data/index-data", help="Path to index schema and JSONL files")
-    return parser.parse_args()
+load_dotenv(dotenv_path=".env", override=True)
 
 
 async def create_index_and_upload(
@@ -154,8 +141,10 @@ async def create_knowledge_base(
 
 async def main_async() -> int:
     """Run index creation for all demo indexes."""
-    args = parse_args()
-    data_dir = Path(args.data_dir)
+    endpoint = os.environ["AZURE_AI_SEARCH_SERVICE_ENDPOINT"]
+    openai_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+    openai_model_deployment = os.environ.get("AZURE_AI_MODEL_DEPLOYMENT_NAME", "")
+    data_dir = Path("data/index-data")
 
     if not data_dir.exists():
         print(f"Data directory not found: {data_dir}")
@@ -166,10 +155,17 @@ async def main_async() -> int:
         print(f"Index schema not found: {index_schema_path}")
         return 1
 
-    if args.admin_key:
-        credential = AzureKeyCredential(args.admin_key)
-    else:
-        credential = DefaultAzureCredential()
+    credential = DefaultAzureCredential()
+
+    # Check if knowledge base already exists — skip if so
+    async with SearchIndexClient(endpoint=endpoint, credential=credential) as index_client:
+        try:
+            await index_client.get_knowledge_base("zava-company-kb")
+            print("Knowledge base 'zava-company-kb' already exists. Skipping index creation.")
+            await credential.close()
+            return 0
+        except Exception:
+            pass
 
     indexes = [
         ("hrdocs", data_dir / "hrdocs-exported.jsonl"),
@@ -183,12 +179,12 @@ async def main_async() -> int:
 
         print(f"Creating index: {index_name}")
         uploaded = await create_index_and_upload(
-            endpoint=args.endpoint,
+            endpoint=endpoint,
             credential=credential,
             index_name=index_name,
             index_schema_path=index_schema_path,
             records_path=records_path,
-            openai_endpoint=args.openai_endpoint,
+            openai_endpoint=openai_endpoint,
         )
         print(f"Uploaded {uploaded} docs to {index_name}")
         await asyncio.sleep(2)
@@ -196,7 +192,7 @@ async def main_async() -> int:
     # Create a single knowledge base with both indexes as knowledge sources
     print("\nCreating knowledge base...")
     await create_knowledge_base(
-        endpoint=args.endpoint,
+        endpoint=endpoint,
         credential=credential,
         kb_name="zava-company-kb",
         kb_description=(
@@ -217,14 +213,13 @@ async def main_async() -> int:
                 "workers compensation, and preventive care benefits.",
             ),
         ],
-        openai_endpoint=args.openai_endpoint,
-        openai_model_deployment=args.openai_model_deployment,
+        openai_endpoint=openai_endpoint,
+        openai_model_deployment=openai_model_deployment,
     )
 
     print("Search index and knowledge base creation complete.")
 
-    if hasattr(credential, "close"):
-        await credential.close()
+    await credential.close()
 
     return 0
 

@@ -17,16 +17,16 @@ This initial version is **LangGraph-first** while staying under the broader “L
 
 The repo intentionally follows Pamela's sample closely:
 
-- `stage0_local_agent.py`
-- `stage1_foundry_model.py`
-- `stage2_foundry_iq.py`
-- `stage2_foundry_iq_retrieve.py`
-- `stage2_foundry_iq_workaround.py`
-- `stage3_foundry_toolbox.py`
-- `main.py` — hosted agent entry point
-- `agent.yaml` — hosted agent configuration
+- `agents/stage0_local_agent.py`
+- `agents/stage1_foundry_model.py`
+- `agents/stage2_foundry_iq.py`
+- `agents/stage2_foundry_iq_retrieve.py`
+- `agents/stage2_foundry_iq_workaround.py`
+- `agents/stage3_foundry_toolbox.py`
+- `agents/stage4_foundry_hosted.py` — hosted agent entry point
+- `agents/agent.yaml` — hosted agent configuration
+- `agents/call_deployed_agent.py` — invoke a deployed agent from the CLI
 - `azure.yaml` — azd service definitions (agent + workflow)
-- `call_deployed_agent.py` — invoke a deployed agent from the CLI
 - `infra/`
 - `data/index-data/`
 - `scripts/`
@@ -62,22 +62,22 @@ Fill in the variables you need for the stage you want to run.
 ### Run the staged demos
 
 ```bash
-uv run python stage0_local_agent.py
-uv run python stage1_foundry_model.py
-uv run python stage2_foundry_iq.py
+uv run python agents/stage0_local_agent.py
+uv run python agents/stage1_foundry_model.py
+uv run python agents/stage2_foundry_iq.py
 ```
 
 If your KB MCP endpoint has compatibility issues, use one of the fallbacks:
 
 ```bash
-uv run python stage2_foundry_iq_workaround.py
-uv run python stage2_foundry_iq_retrieve.py
+uv run python agents/stage2_foundry_iq_workaround.py
+uv run python agents/stage2_foundry_iq_retrieve.py
 ```
 
 After creating the toolbox with the deploy steps below, you can also run:
 
 ```bash
-uv run python stage3_foundry_toolbox.py
+uv run python agents/stage3_foundry_toolbox.py
 ```
 
 ## Deploy the hosted agent
@@ -88,17 +88,8 @@ azd ai agent init
 azd up
 ```
 
-After provisioning, populate the search indexes and toolbox:
-
-```bash
-./write_dot_env.sh
-uv run python infra/create-search-indexes.py \
-  --endpoint "$AZURE_AI_SEARCH_SERVICE_ENDPOINT" \
-  --openai-endpoint "$AZURE_OPENAI_ENDPOINT" \
-  --openai-model-deployment "$AZURE_AI_MODEL_DEPLOYMENT_NAME"
-
-uv run python infra/create-toolbox.py
-```
+The `azd up` command provisions infrastructure, creates search indexes and knowledge base,
+creates the toolbox, and deploys both the agent and workflow services.
 
 Run locally:
 
@@ -115,7 +106,7 @@ azd ai agent invoke --local "What PerksPlus benefits are there, and when do I ne
 Or call a deployed agent via the SDK:
 
 ```bash
-uv run python call_deployed_agent.py "What PerksPlus benefits are there?"
+uv run python agents/call_deployed_agent.py "What PerksPlus benefits are there?"
 ```
 
 ## Workflows
@@ -125,7 +116,7 @@ The `workflows/` directory is deployed as a separate Foundry-hosted service and 
 - `workflows/simple_workflow.py` — pure data-transformation pipeline (no LLM)
 - `workflows/stage1_foundry_model.py` — workflow backed by a Foundry model
 - `workflows/workflow_as_agent.py` — writer → formatter pipeline with streaming
-- `workflows/main.py` — hosted workflow entry point
+- `workflows/stage4_foundry_hosted_as_agent.py` — hosted workflow entry point
 
 ## Evaluation scripts
 

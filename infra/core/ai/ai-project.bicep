@@ -22,9 +22,6 @@ param principalType string
 @description('Optional. Name of an existing AI Services account in the current resource group. If not provided, a new one will be created.')
 param existingAiAccountName string = ''
 
-@description('List of connections to provision')
-param connections array = []
-
 @description('Also provision dependent resources and connect to the project')
 param additionalDependentResources dependentResourcesType
 
@@ -202,21 +199,6 @@ resource existingAppInsightConnection 'Microsoft.CognitiveServices/accounts/proj
   }
 }
 
-// Create additional connections from ai.yaml configuration
-module aiConnections './connection.bicep' = [for (connection, index) in connections: {
-  name: 'connection-${connection.name}'
-  params: {
-    aiServicesAccountName: aiAccount.name
-    aiProjectName: aiAccount::project.name
-    connectionConfig: {
-      name: connection.name
-      category: connection.category
-      target: connection.target
-      authType: connection.authType
-    }
-    apiKey: '' // API keys should be provided via secure parameters or Key Vault
-  }
-}]
 
 resource localUserAiDeveloperRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: resourceGroup()
@@ -399,6 +381,7 @@ output dependentResources object = {
   search: {
     serviceName: hasSearchConnection ? azureAiSearch!.outputs.searchServiceName : ''
     connectionName: hasSearchConnection ? azureAiSearch!.outputs.searchConnectionName : ''
+    kbMcpConnectionName: hasSearchConnection ? azureAiSearch!.outputs.kbMcpConnectionName : ''
   }
   storage: {
     accountName: hasStorageConnection ? storage!.outputs.storageAccountName : ''

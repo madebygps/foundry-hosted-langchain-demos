@@ -30,6 +30,12 @@ param principalType string
 @description('Name for the AI Foundry search connection')
 param connectionName string = 'azure-ai-search-connection'
 
+@description('Knowledge base name for the Foundry IQ MCP connection')
+param knowledgeBaseName string = 'zava-company-kb'
+
+@description('Name for the KB MCP project connection')
+param kbMcpConnectionName string = 'kb-mcp-connection'
+
 @description('Location for all resources')
 param location string = resourceGroup().location
 
@@ -222,6 +228,29 @@ module aiSearchConnection '../ai/connection.bicep' = if (!empty(aiServicesAccoun
   ]
 }
 
+// Foundry IQ MCP connection — allows the Foundry Toolbox to call the KB MCP endpoint
+// using the project's managed identity for authentication against Azure AI Search.
+resource kbMcpConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2026-03-01' = if (!empty(aiServicesAccountName) && !empty(aiProjectName)) {
+  parent: aiAccount::aiProject
+  name: kbMcpConnectionName
+  properties: {
+    // 'ProjectManagedIdentity' is a valid REST API auth type but not yet in the Bicep type definitions
+    #disable-next-line BCP036
+    authType: 'ProjectManagedIdentity'
+    category: 'RemoteTool'
+    target: 'https://${searchService.name}.search.windows.net/knowledgebases/${knowledgeBaseName}/mcp?api-version=2025-11-01-preview'
+    isSharedToAll: true
+    audience: 'https://search.azure.com/'
+    metadata: {
+      ApiType: 'Azure'
+    }
+  }
+  dependsOn: [
+    aiServicesToSearchDataRoleAssignment
+    aiServicesToSearchServiceRoleAssignment
+  ]
+}
+
 // Outputs
 output searchServiceName string = searchService.name
 output searchServiceId string = searchService.id
@@ -232,4 +261,5 @@ output containerName string = storageContainer.name
 output storageAccountPrincipalId string = storageAccount.identity.principalId
 output searchConnectionName string = (!empty(aiServicesAccountName) && !empty(aiProjectName)) ? aiSearchConnection!.outputs.connectionName : ''
 output searchConnectionId string = (!empty(aiServicesAccountName) && !empty(aiProjectName)) ? aiSearchConnection!.outputs.connectionId : ''
+output kbMcpConnectionName string = (!empty(aiServicesAccountName) && !empty(aiProjectName)) ? kbMcpConnection.name : ''
 

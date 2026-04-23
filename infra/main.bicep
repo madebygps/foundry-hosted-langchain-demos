@@ -36,20 +36,6 @@ param aiFoundryResourceName string = ''
 @description('Optional. Name of the AI Foundry project. If not provided, a default name will be used.')
 param aiFoundryProjectName string = 'ai-project-${environmentName}'
 
-@description('List of model deployments')
-param aiProjectDeploymentsJson string = '[]'
-
-@description('List of connections')
-param aiProjectConnectionsJson string = '[]'
-
-@description('List of resources to create and connect to the AI project')
-param aiProjectDependentResourcesJson string = '[]'
-
-var aiProjectDeployments = json(aiProjectDeploymentsJson)
-var aiProjectConnections = json(aiProjectConnectionsJson)
-var aiProjectDependentResources = json(aiProjectDependentResourcesJson)
-var defaultModelDeploymentName = length(aiProjectDeployments) > 0 ? string(aiProjectDeployments[0].name) : ''
-
 @description('Enable hosted agent deployment')
 param enableHostedAgents bool
 
@@ -77,6 +63,23 @@ param existingApplicationInsightsResourceId string = ''
 @description('Optional. Name of an existing Application Insights connection on the Foundry project. If provided, no new App Insights or connection will be created.')
 param existingAppInsightsConnectionName string = ''
 
+var aiProjectDeployments = [
+  {
+    name: 'gpt-5.2'
+    model: {
+      format: 'OpenAI'
+      name: 'gpt-5.2'
+      version: '2025-12-11'
+    }
+    sku: {
+      name: 'GlobalStandard'
+      capacity: 10
+    }
+  }
+]
+var defaultModelDeploymentName = string(aiProjectDeployments[0].name)
+
+
 // Tags that should be applied to all resources.
 // 
 // Note that 'azd-service-name' tags should be applied separately to service host resources.
@@ -94,16 +97,13 @@ resource rg 'Microsoft.Resources/resourceGroups@2021-04-01' = {
 }
 
 // Build dependent resources array conditionally
-// Check if ACR already exists in the user-provided array to avoid duplicates
-// Also skip if user provided an existing container registry endpoint or connection name
-var hasAcr = contains(map(aiProjectDependentResources, r => r.resource), 'registry')
-var shouldCreateAcr = enableHostedAgents && !hasAcr && empty(existingContainerRegistryResourceId) && empty(existingAcrConnectionName)
-var dependentResources = shouldCreateAcr ? union(aiProjectDependentResources, [
+var shouldCreateAcr = enableHostedAgents && empty(existingContainerRegistryResourceId) && empty(existingAcrConnectionName)
+var dependentResources = shouldCreateAcr ? [
   {
     resource: 'registry'
     connectionName: 'acr-connection'
   }
-]) : aiProjectDependentResources
+] : []
 
 // AI Project module
 module aiProject 'core/ai/ai-project.bicep' = {
@@ -117,7 +117,6 @@ module aiProject 'core/ai/ai-project.bicep' = {
     principalType: principalType
     existingAiAccountName: aiFoundryResourceName
     deployments: aiProjectDeployments
-    connections: aiProjectConnections
     additionalDependentResources: dependentResources
     enableMonitoring: enableMonitoring
     enableHostedAgents: enableHostedAgents
@@ -166,6 +165,7 @@ output BING_CUSTOM_GROUNDING_CONNECTION_ID string = aiProject.outputs.dependentR
 output AZURE_AI_SEARCH_CONNECTION_NAME string = aiProject.outputs.dependentResources.search.connectionName
 output AZURE_AI_SEARCH_SERVICE_NAME string = aiProject.outputs.dependentResources.search.serviceName
 output AZURE_AI_SEARCH_SERVICE_ENDPOINT string = !empty(aiProject.outputs.dependentResources.search.serviceName) ? 'https://${aiProject.outputs.dependentResources.search.serviceName}.search.windows.net' : ''
+output AZURE_AI_SEARCH_KB_MCP_CONNECTION_NAME string = aiProject.outputs.dependentResources.search.kbMcpConnectionName
 
 // Azure Storage
 output AZURE_STORAGE_CONNECTION_NAME string = aiProject.outputs.dependentResources.storage.connectionName
