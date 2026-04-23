@@ -71,14 +71,6 @@ LICENSE.md
 # Local-only scripts (not needed in container)
 stage*.py
 call_deployed_agent.py
-write_dot_env.*
-scripts/
-data/
 
-# Separate workflow service (has its own Dockerfile)
-workflows/
-
-# Infrastructure and deployment config (used by azd, not the container)
-infra/
-azure.yaml
+# Deployment config (used by azd, not the container)
 agent.yaml

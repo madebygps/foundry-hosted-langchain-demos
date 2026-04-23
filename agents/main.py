@@ -34,6 +34,9 @@ if not os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING"):
     )
 
 PROJECT_ENDPOINT = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+# The agentserver SDK (1.0.0b14) reads AZURE_AI_PROJECT_ENDPOINT internally.
+# The hosted platform injects FOUNDRY_PROJECT_ENDPOINT, so bridge the gap.
+os.environ.setdefault("AZURE_AI_PROJECT_ENDPOINT", PROJECT_ENDPOINT)
 MODEL_DEPLOYMENT_NAME = os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"]
 SEARCH_SERVICE_ENDPOINT = os.environ["AZURE_AI_SEARCH_SERVICE_ENDPOINT"]
 KNOWLEDGE_BASE_NAME = os.environ["AZURE_AI_SEARCH_KNOWLEDGE_BASE_NAME"]
@@ -177,13 +180,14 @@ async def _build_agent():
         DefaultAzureCredential(), "https://ai.azure.com/.default"
     )
     model_http_client = httpx.Client(auth=_AzureTokenAuth(project_token_provider), timeout=120.0)
+    model_async_http_client = httpx.AsyncClient(auth=_AzureTokenAuth(project_token_provider), timeout=120.0)
     llm = ChatOpenAI(
         base_url=f"{PROJECT_ENDPOINT.rstrip('/')}/openai/v1",
         api_key="placeholder",
         model=MODEL_DEPLOYMENT_NAME,
-        use_responses_api=True,
         streaming=True,
         http_client=model_http_client,
+        http_async_client=model_async_http_client,
     )
 
     search_token_provider = get_bearer_token_provider(
@@ -219,8 +223,11 @@ async def _build_agent():
         logger.info("KB retrieve: %s", queries)
         return kb_tool.retrieve(queries)
 
-    toolbox_endpoint = (
-        f"{PROJECT_ENDPOINT.rstrip('/')}/toolboxes/{TOOLBOX_NAME}/mcp?api-version=v1"
+    # The hosted platform auto-injects FOUNDRY_AGENT_TOOLBOX_ENDPOINT; fall back to
+    # constructing it manually for local development.
+    toolbox_endpoint = os.environ.get(
+        "FOUNDRY_AGENT_TOOLBOX_ENDPOINT",
+        f"{PROJECT_ENDPOINT.rstrip('/')}/toolboxes/{TOOLBOX_NAME}/mcp?api-version=v1",
     )
     extra_headers = {"Foundry-Features": TOOLBOX_FEATURES} if TOOLBOX_FEATURES else {}
     _toolbox_client = MultiServerMCPClient(
@@ -262,7 +269,7 @@ async def _get_agent():
 
 async def main() -> None:
     agent = await _get_agent()
-    await from_langgraph(agent).run_async()
+    await from_langgraph(agent, credentials=DefaultAzureCredential()).run_async()
 
 
 if __name__ == "__main__":

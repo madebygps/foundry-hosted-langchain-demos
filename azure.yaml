@@ -6,7 +6,7 @@ requiredVersions:
 name: ai-foundry-starter-basic
 services:
     hosted-langgraph-agent:
-        project: .
+        project: ./agents
         host: azure.ai.agent
         language: docker
         docker:
@@ -16,8 +16,6 @@ services:
                 resources:
                     cpu: "1"
                     memory: 2Gi
-                scale:
-                    maxReplicas: 1
             deployments:
                 - model:
                     format: OpenAI
@@ -39,8 +37,6 @@ services:
                 resources:
                     cpu: "1"
                     memory: 2Gi
-                scale:
-                    maxReplicas: 1
             startupCommand: python main.py
 infra:
     provider: bicep
