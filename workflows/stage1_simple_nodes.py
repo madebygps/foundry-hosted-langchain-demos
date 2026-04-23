@@ -1,7 +1,7 @@
 """
 Simple workflow example: UpperCase → ReverseText.
 
-Demonstrates LangGraph's StateGraph for chaining pure functions (nodes):
+Demonstrates LangGraph's Functional API for chaining pure functions (tasks):
     - upper_case converts input text to uppercase
     - reverse_text reverses the string
 
@@ -11,41 +11,28 @@ Run:
     python workflows/stage1_simple_nodes.py
 """
 
-import asyncio
-from typing import TypedDict
-
-from langgraph.graph import END, START, StateGraph
+from langgraph.func import entrypoint, task
 
 
-class WorkflowState(TypedDict):
-    text: str
-
-
-def upper_case(state: WorkflowState) -> WorkflowState:
+@task
+def upper_case(text: str) -> str:
     """Convert input text to uppercase."""
-    return {"text": state["text"].upper()}
+    return text.upper()
 
 
-def reverse_text(state: WorkflowState) -> WorkflowState:
+@task
+def reverse_text(text: str) -> str:
     """Reverse the string."""
-    return {"text": state["text"][::-1]}
+    return text[::-1]
 
 
-async def main():
-    """Build and run the UpperCase → ReverseText workflow."""
-    graph = StateGraph(WorkflowState)
-    graph.add_node("upper_case", upper_case)
-    graph.add_node("reverse_text", reverse_text)
-    graph.add_edge(START, "upper_case")
-    graph.add_edge("upper_case", "reverse_text")
-    graph.add_edge("reverse_text", END)
-
-    workflow = graph.compile()
-    result = await workflow.ainvoke({"text": "hello world"})
-
-    print("Input:  hello world")
-    print(f"Output: {result['text']}")
+@entrypoint()
+def workflow(text: str) -> str:
+    """Chain: UpperCase → ReverseText."""
+    return reverse_text(upper_case(text).result()).result()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    result = workflow.invoke("hello world")
+    print("Input:  hello world")
+    print(f"Output: {result}")

@@ -55,6 +55,7 @@ async def main() -> None:
             base_url=f"{os.environ['AZURE_OPENAI_ENDPOINT'].rstrip('/')}/openai/v1/",
             api_key=token_provider,
             model=os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"],
+            use_responses_api=True,
         )
 
         agent = create_agent(

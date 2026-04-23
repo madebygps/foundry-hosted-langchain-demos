@@ -1,23 +1,22 @@
 """
-Workflow demo: Multi-agent workflow using LangGraph's StateGraph.
+Workflow demo: Multi-step workflow using LangGraph's Functional API.
 
 Uses the Responses protocol via ResponsesAgentServerHost for hosting.
-Three LLM nodes in a chain:
+Three LLM tasks in a chain:
     writer → legal_reviewer → formatter
 
 The writer creates a slogan, the legal reviewer checks it, and the formatter
-styles it for terminal output. Each node only sees the output of the
-previous node.
+styles it for terminal output. Each task only sees the output of the
+previous task.
 
-Conversation history is managed by the platform via
-``previous_response_id`` and ``context.get_history()``.
+Conversation history is managed externally by the platform via
+``previous_response_id``.
 """
 
 import asyncio
 import logging
 import os
 
-import httpx
 from azure.ai.agentserver.responses import (
     CreateResponse,
     ResponseContext,
@@ -25,15 +24,10 @@ from azure.ai.agentserver.responses import (
     ResponsesServerOptions,
     TextResponse,
 )
-from azure.ai.agentserver.responses.models import (
-    MessageContentInputTextContent,
-    MessageContentOutputTextContent,
-)
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.func import entrypoint, task
 
 load_dotenv(dotenv_path="../.env", override=True)
 
@@ -46,105 +40,78 @@ MODEL_DEPLOYMENT_NAME = os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"]
 _credential = DefaultAzureCredential()
 _token_provider = get_bearer_token_provider(_credential, "https://ai.azure.com/.default")
 
-
-class _AzureTokenAuth(httpx.Auth):
-    def __init__(self, provider):
-        self._provider = provider
-
-    def auth_flow(self, request):
-        request.headers["Authorization"] = f"Bearer {self._provider()}"
-        yield request
+llm = ChatOpenAI(
+    base_url=f"{PROJECT_ENDPOINT.rstrip('/')}/openai/v1",
+    api_key=_token_provider,
+    model=MODEL_DEPLOYMENT_NAME,
+    use_responses_api=True,
+)
 
 
-_http_client = httpx.Client(auth=_AzureTokenAuth(_token_provider), timeout=120.0)
-
-
-def _build_workflow():
-    llm = ChatOpenAI(
-        base_url=f"{PROJECT_ENDPOINT.rstrip('/')}/openai/v1",
-        api_key="placeholder",
-        model=MODEL_DEPLOYMENT_NAME,
-        use_responses_api=True,
-        streaming=True,
-        http_client=_http_client,
+@task
+def writer(user_input: str) -> str:
+    """Create a slogan based on the user's input."""
+    response = llm.invoke(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "You are an excellent slogan writer. "
+                    "You create new slogans based on the given topic."
+                ),
+            },
+            {"role": "user", "content": user_input},
+        ]
     )
+    return response.content
 
-    def writer(state: MessagesState) -> dict:
-        user_input = state["messages"][-1].content
-        response = llm.invoke(
-            [
-                SystemMessage(
-                    content=(
-                        "You are an excellent slogan writer. "
-                        "You create new slogans based on the given topic."
-                    )
+
+@task
+def legal_reviewer(text: str) -> str:
+    """Review and correct the slogan for legal compliance."""
+    response = llm.invoke(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "You are an excellent legal reviewer. "
+                    "Make necessary corrections to the slogan so that it is legally compliant."
                 ),
-                HumanMessage(content=user_input),
-            ]
-        )
-        return {"messages": [response]}
+            },
+            {"role": "user", "content": text},
+        ]
+    )
+    return response.content
 
-    def legal_reviewer(state: MessagesState) -> dict:
-        previous_output = state["messages"][-1].content
-        response = llm.invoke(
-            [
-                SystemMessage(
-                    content=(
-                        "You are an excellent legal reviewer. "
-                        "Make necessary corrections to the slogan so that it is legally compliant."
-                    )
+
+@task
+def formatter(text: str) -> str:
+    """Format the slogan with Markdown for display."""
+    response = llm.invoke(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "You are an excellent content formatter. "
+                    "You take the slogan and format it in Markdown with bold text "
+                    "and decorative elements. Do not use ANSI escape codes or terminal color codes."
                 ),
-                HumanMessage(content=previous_output),
-            ]
-        )
-        return {"messages": [response]}
-
-    def formatter(state: MessagesState) -> dict:
-        previous_output = state["messages"][-1].content
-        response = llm.invoke(
-            [
-                SystemMessage(
-                    content=(
-                        "You are an excellent content formatter. "
-                        "You take the slogan and format it in Markdown with bold text and decorative elements. "
-                        "Do not use ANSI escape codes or terminal color codes."
-                    )
-                ),
-                HumanMessage(content=previous_output),
-            ]
-        )
-        return {"messages": [response]}
-
-    graph = StateGraph(MessagesState)
-    graph.add_node("writer", writer)
-    graph.add_node("legal_reviewer", legal_reviewer)
-    graph.add_node("formatter", formatter)
-    graph.add_edge(START, "writer")
-    graph.add_edge("writer", "legal_reviewer")
-    graph.add_edge("legal_reviewer", "formatter")
-    graph.add_edge("formatter", END)
-
-    return graph.compile()
+            },
+            {"role": "user", "content": text},
+        ]
+    )
+    return response.content
 
 
-WORKFLOW = _build_workflow()
+@entrypoint()
+def workflow(user_input: str) -> str:
+    """Chain: Writer → Legal Reviewer → Formatter."""
+    draft = writer(user_input).result()
+    reviewed = legal_reviewer(draft).result()
+    return formatter(reviewed).result()
 
 
 # ── Responses protocol handler ──────────────────────────────────────
-
-
-def _history_to_langchain_messages(history: list) -> list:
-    """Convert responses-protocol history items to LangChain messages."""
-    messages = []
-    for item in history:
-        if hasattr(item, "content") and item.content:
-            for content in item.content:
-                if isinstance(content, MessageContentOutputTextContent) and content.text:
-                    messages.append(AIMessage(content=content.text))
-                elif isinstance(content, MessageContentInputTextContent) and content.text:
-                    messages.append(HumanMessage(content=content.text))
-    return messages
-
 
 app = ResponsesAgentServerHost(
     options=ResponsesServerOptions(default_fetch_history_count=20)
@@ -161,25 +128,16 @@ async def handle_create(
 
     async def run_workflow():
         try:
-            try:
-                history = await context.get_history()
-            except Exception:
-                history = []
             current_input = await context.get_input_text() or "Hello!"
+            result = await workflow.ainvoke(current_input)
 
-            lc_messages = _history_to_langchain_messages(history)
-            lc_messages.append(HumanMessage(content=current_input))
-
-            result = await WORKFLOW.ainvoke({"messages": lc_messages})
-
-            raw = result["messages"][-1].content
-            if isinstance(raw, list):
+            if isinstance(result, list):
                 yield "".join(
                     block.get("text", "") if isinstance(block, dict) else str(block)
-                    for block in raw
+                    for block in result
                 )
             else:
-                yield raw or ""
+                yield result or ""
         except Exception as exc:
             logger.exception("run_workflow failed")
             yield f"[ERROR] {type(exc).__name__}: {exc}"

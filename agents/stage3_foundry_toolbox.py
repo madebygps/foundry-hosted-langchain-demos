@@ -17,6 +17,7 @@ Run:
 import asyncio
 import logging
 import os
+import re
 from datetime import date, timedelta
 
 import httpx
@@ -89,6 +90,7 @@ async def main() -> None:
             base_url=f"{os.environ['AZURE_OPENAI_ENDPOINT'].rstrip('/')}/openai/v1/",
             api_key=aoai_token_provider,
             model=os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"],
+            use_responses_api=True,
         )
 
         toolbox_name = os.environ["CUSTOM_FOUNDRY_AGENT_TOOLBOX_NAME"]
@@ -112,6 +114,12 @@ async def main() -> None:
             }
         )
         toolbox_tools = await toolbox_client.get_tools(server_name="toolbox")
+        for t in toolbox_tools:
+            t.handle_tool_error = True
+            sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", t.name)
+            if sanitized != t.name:
+                logger.info("Renamed tool %r -> %r for Responses API compatibility", t.name, sanitized)
+                t.name = sanitized
 
         agent = create_agent(
             model=client,

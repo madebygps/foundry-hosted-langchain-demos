@@ -2,22 +2,26 @@
 Hosted HR helper built with LangGraph and Microsoft Foundry.
 
 Uses the Responses protocol via ResponsesAgentServerHost for hosting.
-The LangGraph agent has two nodes: chatbot (calls LLM with tools) and
-tools (executes tool calls). Conversation history is managed by the
+The agent is built with ``create_agent`` (LangChain v1) which provides
+a ReAct tool-calling loop. Conversation history is managed by the
 platform via ``previous_response_id`` and ``context.get_history()``.
+
+All tools — knowledge-base retrieval, web search, code interpreter —
+come from a single Foundry Toolbox MCP endpoint, plus two local tools
+for enrollment deadlines and the current date.
 
 Run locally with:
     azd ai agent run
 """
 
 import asyncio
-import json
 import logging
 import os
+import re
 from datetime import date
-from typing import Annotated
 
 import httpx
+import mcp.types
 from azure.ai.agentserver.responses import (
     CreateResponse,
     ResponseContext,
@@ -31,17 +35,13 @@ from azure.ai.agentserver.responses.models import (
 )
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
-from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
-from pydantic import Field
-from typing_extensions import TypedDict
 
-load_dotenv(dotenv_path=".env", override=True)
+load_dotenv(override=True)
 
 logger = logging.getLogger("hr-agent")
 logger.setLevel(logging.INFO)
@@ -54,8 +54,6 @@ if not os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING"):
 
 PROJECT_ENDPOINT = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
 MODEL_DEPLOYMENT_NAME = os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"]
-SEARCH_SERVICE_ENDPOINT = os.environ["AZURE_AI_SEARCH_SERVICE_ENDPOINT"]
-KNOWLEDGE_BASE_NAME = os.environ["AZURE_AI_SEARCH_KNOWLEDGE_BASE_NAME"]
 TOOLBOX_NAME = os.environ.get("CUSTOM_FOUNDRY_AGENT_TOOLBOX_NAME", "hr-agent-tools")
 TOOLBOX_FEATURES = os.getenv("FOUNDRY_AGENT_TOOLBOX_FEATURES", "Toolboxes=V1Preview")
 
@@ -71,82 +69,35 @@ class _AzureTokenAuth(httpx.Auth):
         request.headers["Authorization"] = f"Bearer {self._provider()}"
         yield request
 
-
-_http_client = httpx.Client(auth=_AzureTokenAuth(_token_provider), timeout=120.0)
-
-
-class KnowledgeBaseMCPTool:
-    """Manual MCP wrapper for Azure AI Search knowledge-base retrieval."""
-
-    def __init__(self, http_client: httpx.Client, mcp_url: str) -> None:
-        self._http_client = http_client
-        self._mcp_url = mcp_url
-        self._initialized = False
-        self._headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        }
-
-    def _ensure_initialized(self) -> None:
-        if self._initialized:
-            return
-        self._http_client.post(
-            self._mcp_url,
-            json={
-                "jsonrpc": "2.0",
-                "id": 0,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-11-25",
-                    "capabilities": {"sampling": {}},
-                    "clientInfo": {"name": "hr-agent", "version": "0.1.0"},
-                },
-            },
-            headers=self._headers,
-        ).raise_for_status()
-        self._http_client.post(
-            self._mcp_url,
-            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
-            headers=self._headers,
-        ).raise_for_status()
-        self._initialized = True
-
-    def retrieve(self, queries: list[str]) -> str:
-        self._ensure_initialized()
-        response = self._http_client.post(
-            self._mcp_url,
-            json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "knowledge_base_retrieve",
-                    "arguments": {"queries": queries},
-                },
-            },
-            headers=self._headers,
-        )
-        response.raise_for_status()
-        for line in response.text.splitlines():
-            if not line.startswith("data:"):
-                continue
-            data = json.loads(line[5:].strip())
-            result = data.get("result", {})
-            content = result.get("content", [])
-            snippets: list[str] = []
-            for item in content:
-                if item.get("type") == "resource" and "resource" in item:
-                    snippets.append(item["resource"].get("text", ""))
-                elif item.get("type") == "text":
-                    snippets.append(item.get("text", ""))
-            if snippets:
-                return "\n\n---\n\n".join(snippets)
-        return "No results found."
+# Workaround: Azure AI Search KB MCP returns resource content with uri: null
+# or uri: "", which fails pydantic AnyUrl validation in the MCP SDK.
+for _cls in [
+    mcp.types.ResourceContents,
+    mcp.types.TextResourceContents,
+    mcp.types.BlobResourceContents,
+]:
+    _cls.model_fields["uri"].annotation = str | None
+    _cls.model_fields["uri"].default = None
+    _cls.model_fields["uri"].metadata = []
+for _cls in [
+    mcp.types.ResourceContents,
+    mcp.types.TextResourceContents,
+    mcp.types.BlobResourceContents,
+    mcp.types.EmbeddedResource,
+    mcp.types.CallToolResult,
+]:
+    _cls.model_rebuild(force=True)
 
 
 def _sanitize_tools(tools: list) -> list:
+    """Fix MCP tool names/schemas for Responses API compatibility."""
     for tool_obj in tools:
         tool_obj.handle_tool_error = True
+        # The Responses API requires tool names to match ^[a-zA-Z0-9_-]+$.
+        sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", tool_obj.name)
+        if sanitized != tool_obj.name:
+            logger.info("Renamed tool %r -> %r for Responses API compatibility", tool_obj.name, sanitized)
+            tool_obj.name = sanitized
         schema = tool_obj.args_schema if isinstance(tool_obj.args_schema, dict) else None
         if schema is None:
             continue
@@ -191,53 +142,16 @@ If the tools do not provide enough information, say so clearly and do not invent
 """
 
 
-# ── LangGraph definition ────────────────────────────────────────────
+# ── Agent setup ─────────────────────────────────────────────────────
 
-
-class State(TypedDict):
-    messages: Annotated[list, add_messages]
-
-
-_graph = None
+_agent = None
 _toolbox_client = None
-_graph_lock = asyncio.Lock()
+_agent_lock = asyncio.Lock()
 
 
-async def _build_graph():
+async def _build_agent():
+    """Build the LangGraph agent with toolbox + local tools."""
     global _toolbox_client
-
-    search_token_provider = get_bearer_token_provider(
-        DefaultAzureCredential(), "https://search.azure.com/.default"
-    )
-    kb_http_client = httpx.Client(
-        auth=_AzureTokenAuth(search_token_provider),
-        timeout=httpx.Timeout(30.0, read=300.0),
-    )
-    kb_tool = KnowledgeBaseMCPTool(
-        kb_http_client,
-        (
-            f"{SEARCH_SERVICE_ENDPOINT.rstrip('/')}"
-            f"/knowledgebases/{KNOWLEDGE_BASE_NAME}/mcp?api-version=2025-11-01-Preview"
-        ),
-    )
-
-    @tool
-    def knowledge_base_retrieve(
-        queries: Annotated[
-            list[str],
-            Field(
-                description=(
-                    "1 to 4 concise search queries (max ~12 words each). "
-                    "Use alternate wording as separate entries."
-                ),
-                min_length=1,
-                max_length=4,
-            ),
-        ],
-    ) -> str:
-        """Search the Zava company knowledge base for HR policies and benefits."""
-        logger.info("KB retrieve: %s", queries)
-        return kb_tool.retrieve(queries)
 
     # The hosted platform auto-injects FOUNDRY_AGENT_TOOLBOX_ENDPOINT; fall back to
     # constructing it manually for local development.
@@ -264,49 +178,27 @@ async def _build_graph():
     except Exception as exc:
         logger.warning("Toolbox startup skipped: %s", exc)
 
-    all_tools = [
-        knowledge_base_retrieve,
-        get_enrollment_deadline_info,
-        get_current_date,
-        *toolbox_tools,
-    ]
+    all_tools = [get_enrollment_deadline_info, get_current_date, *toolbox_tools]
 
     llm = ChatOpenAI(
         base_url=f"{PROJECT_ENDPOINT.rstrip('/')}/openai/v1",
-        api_key="placeholder",
+        api_key=_token_provider,
         model=MODEL_DEPLOYMENT_NAME,
         use_responses_api=True,
         streaming=True,
-        http_client=_http_client,
     )
-    llm_with_tools = llm.bind_tools(all_tools)
 
-    def chatbot(state: State):
-        return {"messages": [llm_with_tools.invoke(state["messages"])]}
-
-    def route_tools(state: State):
-        last = state["messages"][-1]
-        if hasattr(last, "tool_calls") and last.tool_calls:
-            return "tools"
-        return END
-
-    graph = StateGraph(State)
-    graph.add_node("chatbot", chatbot)
-    graph.add_node("tools", ToolNode(tools=all_tools))
-    graph.add_edge(START, "chatbot")
-    graph.add_conditional_edges("chatbot", route_tools, {"tools": "tools", END: END})
-    graph.add_edge("tools", "chatbot")
-    return graph.compile()
+    return create_agent(model=llm, tools=all_tools, system_prompt=SYSTEM_PROMPT)
 
 
-async def _get_graph():
-    global _graph
-    if _graph is not None:
-        return _graph
-    async with _graph_lock:
-        if _graph is None:
-            _graph = await _build_graph()
-    return _graph
+async def _get_agent():
+    global _agent
+    if _agent is not None:
+        return _agent
+    async with _agent_lock:
+        if _agent is None:
+            _agent = await _build_agent()
+    return _agent
 
 
 # ── Responses protocol handler ──────────────────────────────────────
@@ -338,20 +230,19 @@ async def handle_create(
 ):
     """Run the LangGraph agent and stream the response."""
 
-    async def run_graph():
+    async def run_agent():
         try:
-            graph = await _get_graph()
+            agent = await _get_agent()
             try:
                 history = await context.get_history()
             except Exception:
                 history = []
             current_input = await context.get_input_text() or "Hello!"
 
-            lc_messages = [SystemMessage(content=SYSTEM_PROMPT)]
-            lc_messages.extend(_history_to_langchain_messages(history))
+            lc_messages = _history_to_langchain_messages(history)
             lc_messages.append(HumanMessage(content=current_input))
 
-            result = await graph.ainvoke({"messages": lc_messages})
+            result = await agent.ainvoke({"messages": lc_messages})
 
             # With use_responses_api, content may be a list of content blocks.
             raw = result["messages"][-1].content
@@ -363,10 +254,10 @@ async def handle_create(
             else:
                 yield raw or ""
         except Exception as exc:
-            logger.exception("run_graph failed")
+            logger.exception("run_agent failed")
             yield f"[ERROR] {type(exc).__name__}: {exc}"
 
-    return TextResponse(context, request, text=run_graph())
+    return TextResponse(context, request, text=run_agent())
 
 
 if __name__ == "__main__":

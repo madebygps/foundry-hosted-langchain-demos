@@ -12,7 +12,7 @@ Prerequisites:
        at http://localhost:11434/v1 by default).
 
 Run:
-    python stage0_local_agent.py
+    python agents/stage0_local_model.py
 """
 
 import asyncio
@@ -43,6 +43,7 @@ client = ChatOpenAI(
     base_url="http://localhost:11434/v1/",
     api_key="ollama",  # any non-empty string
     model="qwen3.5:9b",
+    use_responses_api=True,
 )
 
 agent = create_agent(

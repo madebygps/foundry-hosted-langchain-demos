@@ -1,7 +1,7 @@
 """
 Workflow as Agent: Writer → Formatter pipeline with streaming output.
 
-Demonstrates LangGraph's StateGraph with astream — each node produces
+Demonstrates LangGraph's Functional API with streaming — each task produces
 output that is printed as it arrives, showing the multi-step processing.
 
 This is the local runnable version of the workflow pattern used by the
@@ -18,91 +18,83 @@ Run:
     python workflows/stage3_as_agent.py
 """
 
-import asyncio
 import os
-from typing import TypedDict
 
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langgraph.graph import END, START, StateGraph
+from langgraph.func import entrypoint, task
 
 load_dotenv(override=True)
 
+_credential = DefaultAzureCredential()
+_token_provider = get_bearer_token_provider(
+    _credential, "https://cognitiveservices.azure.com/.default"
+)
 
-class WorkflowState(TypedDict):
-    content: str
+llm = ChatOpenAI(
+    base_url=f"{os.environ['AZURE_OPENAI_ENDPOINT'].rstrip('/')}/openai/v1/",
+    api_key=_token_provider,
+    model=os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"],
+    use_responses_api=True,
+)
 
 
-async def main():
-    """Build a Writer → Formatter workflow and stream results."""
-    credential = DefaultAzureCredential()
-    token_provider = get_bearer_token_provider(
-        credential, "https://cognitiveservices.azure.com/.default"
+@task
+def writer(topic: str) -> str:
+    """Draft a short article based on the given topic."""
+    response = llm.invoke(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "You are a concise content writer. "
+                    "Write a clear, engaging short article (2-3 paragraphs) based on the user's topic. "
+                    "Focus on accuracy and readability."
+                ),
+            },
+            {"role": "user", "content": topic},
+        ]
     )
+    return response.content
 
-    llm = ChatOpenAI(
-        base_url=f"{os.environ['AZURE_OPENAI_ENDPOINT'].rstrip('/')}/openai/v1/",
-        api_key=token_provider,
-        model=os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"],
-        streaming=True,
+
+@task
+def formatter(text: str) -> str:
+    """Format text with Markdown and emojis."""
+    response = llm.invoke(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert content formatter. "
+                    "Take the provided text and format it with Markdown (bold, headers, lists) "
+                    "and relevant emojis to make it visually engaging. "
+                    "Preserve the original meaning and content."
+                ),
+            },
+            {"role": "user", "content": text},
+        ]
     )
+    return response.content
 
-    async def writer(state: WorkflowState) -> WorkflowState:
-        response = await llm.ainvoke(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a concise content writer. "
-                        "Write a clear, engaging short article (2-3 paragraphs) based on the user's topic. "
-                        "Focus on accuracy and readability."
-                    ),
-                },
-                {"role": "user", "content": state["content"]},
-            ]
-        )
-        return {"content": response.content}
 
-    async def formatter(state: WorkflowState) -> WorkflowState:
-        response = await llm.ainvoke(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an expert content formatter. "
-                        "Take the provided text and format it with Markdown (bold, headers, lists) "
-                        "and relevant emojis to make it visually engaging. "
-                        "Preserve the original meaning and content."
-                    ),
-                },
-                {"role": "user", "content": state["content"]},
-            ]
-        )
-        return {"content": response.content}
+@entrypoint()
+def workflow(topic: str) -> str:
+    """Chain: Writer → Formatter."""
+    draft = writer(topic).result()
+    return formatter(draft).result()
 
-    graph = StateGraph(WorkflowState)
-    graph.add_node("writer", writer)
-    graph.add_node("formatter", formatter)
-    graph.add_edge(START, "writer")
-    graph.add_edge("writer", "formatter")
-    graph.add_edge("formatter", END)
 
-    workflow = graph.compile()
-
+if __name__ == "__main__":
     prompt = "Write a short post about why open-source AI frameworks matter."
     print(f"Prompt: {prompt}\n")
     print("=" * 60)
 
-    async for event in workflow.astream({"content": prompt}, stream_mode="updates"):
-        for node_name, update in event.items():
-            print(f"\n[{node_name}]:")
-            print(update.get("content", ""))
+    for event in workflow.stream(prompt, stream_mode="updates"):
+        for task_name, result in event.items():
+            print(f"\n[{task_name}]:")
+            print(result)
             print("-" * 40)
 
     print("=" * 60)
-    credential.close()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

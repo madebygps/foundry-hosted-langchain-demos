@@ -83,6 +83,7 @@ async def main() -> None:
             base_url=f"{os.environ['AZURE_OPENAI_ENDPOINT'].rstrip('/')}/openai/v1/",
             api_key=aoai_token_provider,
             model=os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"],
+            use_responses_api=True,
         )
 
         search_token_provider = get_bearer_token_provider(
@@ -94,7 +95,7 @@ async def main() -> None:
             f"/mcp?api-version=2025-11-01-Preview"
         )
 
-        async with MultiServerMCPClient(
+        kb_client = MultiServerMCPClient(
             {
                 "knowledge-base": {
                     "url": mcp_url,
@@ -103,35 +104,35 @@ async def main() -> None:
                     "auth": _AzureTokenAuth(search_token_provider),
                 }
             }
-        ) as kb_client:
-            kb_tools = _sanitize_tools(await kb_client.get_tools())
+        )
+        kb_tools = _sanitize_tools(await kb_client.get_tools())
 
-            agent = create_agent(
-                model=client,
-                tools=[get_enrollment_deadline_info, *kb_tools],
-                system_prompt=(
-                    f"You are an internal HR helper for Zava. Today's date is {date.today().isoformat()}. "
-                    "Use the knowledge-base tool to answer questions about HR policies, benefits, "
-                    "and company information, and ground all answers in the retrieved context. "
-                    "Use get_enrollment_deadline_info for benefits enrollment timing. "
-                    "If you cannot answer from the tools, say so clearly."
-                ),
+        agent = create_agent(
+            model=client,
+            tools=[get_enrollment_deadline_info, *kb_tools],
+            system_prompt=(
+                f"You are an internal HR helper for Zava. Today's date is {date.today().isoformat()}. "
+                "Use the knowledge-base tool to answer questions about HR policies, benefits, "
+                "and company information, and ground all answers in the retrieved context. "
+                "Use get_enrollment_deadline_info for benefits enrollment timing. "
+                "If you cannot answer from the tools, say so clearly."
+            ),
+        )
+
+        response = (
+            await agent.ainvoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "What PerksPlus benefits are there, and when do I need to enroll by?",
+                        }
+                    ]
+                }
             )
-
-            response = (
-                await agent.ainvoke(
-                    {
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": "What PerksPlus benefits are there, and when do I need to enroll by?",
-                            }
-                        ]
-                    }
-                )
-            )["messages"][-1]
-            console.print("\n[bold]Agent answer:[/bold]")
-            console.print(Markdown(response.text))
+        )["messages"][-1]
+        console.print("\n[bold]Agent answer:[/bold]")
+        console.print(Markdown(response.text))
     finally:
         credential.close()
 
