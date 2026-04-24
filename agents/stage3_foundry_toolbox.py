@@ -18,15 +18,15 @@ import asyncio
 import logging
 import os
 import re
-from datetime import date, timedelta
+from datetime import date
 
-import httpx
 import mcp.types
+from azure.identity import DefaultAzureCredential as SyncDefaultAzureCredential
 from azure.identity.aio import DefaultAzureCredential, get_bearer_token_provider
 from dotenv import load_dotenv
 from langchain.agents import create_agent
+from langchain_azure_ai.tools import AzureAIProjectToolbox
 from langchain_core.tools import tool
-from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
 from rich.console import Console
 from rich.logging import RichHandler
@@ -38,26 +38,24 @@ console = Console()
 logger = logging.getLogger("stage3")
 
 
+def _sanitize_tool_names(tools: list) -> list:
+    """Fix MCP tool names for Responses API compatibility (^[a-zA-Z0-9_-]+$)."""
+    for t in tools:
+        sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", t.name)
+        if sanitized != t.name:
+            logger.info("Renamed tool %r -> %r", t.name, sanitized)
+            t.name = sanitized
+    return tools
+
+
 @tool
 def get_enrollment_deadline_info() -> dict:
     """Return enrollment timeline details for health insurance plans."""
     logger.info("[tool] get_enrollment_deadline_info()")
     return {
-        "benefits_enrollment_opens": "2026-11-11",
-        "benefits_enrollment_closes": "2026-11-30",
+        "enrollment_opens": "2026-11-11",
+        "enrollment_closes": "2026-11-30",
     }
-
-
-class ToolboxAuth(httpx.Auth):
-    """Inject a fresh bearer token for the Foundry Toolbox MCP endpoint."""
-
-    def __init__(self, token_provider) -> None:
-        self._token_provider = token_provider
-
-    async def async_auth_flow(self, request):
-        token = await self._token_provider()
-        request.headers["Authorization"] = f"Bearer {token}"
-        yield request
 
 
 # Workaround: Azure AI Search KB MCP returns resource content with uri: null
@@ -93,33 +91,11 @@ async def main() -> None:
             use_responses_api=True,
         )
 
-        toolbox_name = os.environ["CUSTOM_FOUNDRY_AGENT_TOOLBOX_NAME"]
-        project_endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
-        toolbox_endpoint = (
-            f"{project_endpoint.rstrip('/')}/toolboxes/{toolbox_name}/mcp?api-version=v1"
+        toolbox = AzureAIProjectToolbox(
+            toolbox_name=os.environ["CUSTOM_FOUNDRY_AGENT_TOOLBOX_NAME"],
+            credential=SyncDefaultAzureCredential(),
         )
-
-        toolbox_token_provider = get_bearer_token_provider(
-            credential, "https://ai.azure.com/.default"
-        )
-        toolbox_client = MultiServerMCPClient(
-            {
-                "toolbox": {
-                    "url": toolbox_endpoint,
-                    "transport": "streamable_http",
-                    "headers": {"Foundry-Features": "Toolboxes=V1Preview"},
-                    "timeout": timedelta(seconds=120),
-                    "auth": ToolboxAuth(toolbox_token_provider),
-                }
-            }
-        )
-        toolbox_tools = await toolbox_client.get_tools(server_name="toolbox")
-        for t in toolbox_tools:
-            t.handle_tool_error = True
-            sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", t.name)
-            if sanitized != t.name:
-                logger.info("Renamed tool %r -> %r for Responses API compatibility", t.name, sanitized)
-                t.name = sanitized
+        toolbox_tools = _sanitize_tool_names(await toolbox.get_tools())
 
         agent = create_agent(
             model=client,

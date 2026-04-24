@@ -28,7 +28,7 @@ services:
                 resources:
                     cpu: "1"
                     memory: 2Gi
-            startupCommand: python stage4_foundry_hosted_as_agent.py
+            startupCommand: python stage3_foundry_hosted_as_agent.py
 infra:
     provider: bicep
     path: ./infra
@@ -55,3 +55,18 @@ hooks:
             shell: sh
             run: infra/hooks/postprovision.sh
             interactive: true
+    prepackage:
+        windows:
+            shell: pwsh
+            run: |
+                Write-Host "Copying shared vendor/ into service directories..."
+                Copy-Item -Recurse -Force vendor agents\vendor
+                Copy-Item -Recurse -Force vendor workflows\vendor
+        posix:
+            name: prepackage
+            kind: sh
+            shell: sh
+            run: |
+                echo "Copying shared vendor/ into service directories..."
+                cp -r vendor/ agents/vendor/
+                cp -r vendor/ workflows/vendor/
