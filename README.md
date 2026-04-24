@@ -2,8 +2,6 @@
 
 A sample AI agent built with [LangChain/LangGraph](https://langchain-ai.github.io/langgraph/) that helps employees with HR benefits questions. This project is designed as an `azd` starter template for deploying hosted AI agents to [Microsoft Foundry](https://learn.microsoft.com/azure/foundry/).
 
-This repo mirrors the structure and teaching flow of [`pamelafox/foundry-hosted-agentframework-demo`](https://github.com/pamelafox/foundry-hosted-agentframework-demo), but uses the **LangChain/LangGraph** ecosystem instead of Microsoft Agent Framework.
-
 ## What it does
 
 The agent uses company HR documents (via Azure AI Search) and tool-calling to:
