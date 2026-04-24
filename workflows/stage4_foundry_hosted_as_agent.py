@@ -1,35 +1,32 @@
 """
-Workflow demo: Multi-step workflow using LangGraph's Functional API.
+Workflow demo: Multi-step workflow hosted on Azure AI Foundry.
 
-Three LLM tasks in a chain:
+Three LLM nodes in a chain:
     writer → legal_reviewer → formatter
 
 The writer creates a slogan, the legal reviewer checks it, and the formatter
-styles it for terminal output. Each task only sees the output of the
-previous task.
+styles it for terminal output. Each node only sees the output of the
+previous node.
 
-Note: The vendored _vendor/langchain_azure_ai_runtime module
-(from https://github.com/langchain-ai/langchain-azure/pull/501) is available
-here for future use but is not used by this workflow. It is most useful for
-MessagesState-based agent graphs (see agents/stage4_foundry_hosted.py).
+This module uses AzureAIResponsesAgentHost from a vendored copy of
+https://github.com/langchain-ai/langchain-azure/pull/501 which provides
+first-class LangGraph hosting support for Azure AI Foundry.
+
+Run using:
+    azd ai agent run
 """
 
-import asyncio
 import logging
 import os
 
-from azure.ai.agentserver.responses import (
-    CreateResponse,
-    ResponseContext,
-    ResponsesAgentServerHost,
-    ResponsesServerOptions,
-    TextResponse,
-)
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from dotenv import load_dotenv
 from langchain_azure_ai.callbacks.tracers import enable_auto_tracing
+from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
-from langgraph.func import entrypoint, task
+from langgraph.graph import END, START, MessagesState, StateGraph
+
+from _vendor.langchain_azure_ai_runtime import AzureAIResponsesAgentHost
 
 load_dotenv(dotenv_path="../.env", override=True)
 
@@ -56,13 +53,14 @@ llm = ChatOpenAI(
     api_key=_token_provider,
     model=MODEL_DEPLOYMENT_NAME,
     use_responses_api=True,
+    streaming=True,
 )
 
 
-@task
-def writer(user_input: str) -> str:
+async def writer(state: MessagesState) -> MessagesState:
     """Create a slogan based on the user's input."""
-    response = llm.invoke(
+    user_text = state["messages"][-1].content
+    response = await llm.ainvoke(
         [
             {
                 "role": "system",
@@ -71,16 +69,16 @@ def writer(user_input: str) -> str:
                     "You create new slogans based on the given topic."
                 ),
             },
-            {"role": "user", "content": user_input},
+            {"role": "user", "content": user_text},
         ]
     )
-    return response.content
+    return {"messages": [AIMessage(content=response.content)]}
 
 
-@task
-def legal_reviewer(text: str) -> str:
+async def legal_reviewer(state: MessagesState) -> MessagesState:
     """Review and correct the slogan for legal compliance."""
-    response = llm.invoke(
+    previous_output = state["messages"][-1].content
+    response = await llm.ainvoke(
         [
             {
                 "role": "system",
@@ -89,16 +87,16 @@ def legal_reviewer(text: str) -> str:
                     "Make necessary corrections to the slogan so that it is legally compliant."
                 ),
             },
-            {"role": "user", "content": text},
+            {"role": "user", "content": previous_output},
         ]
     )
-    return response.content
+    return {"messages": [AIMessage(content=response.content)]}
 
 
-@task
-def formatter(text: str) -> str:
+async def formatter(state: MessagesState) -> MessagesState:
     """Format the slogan with Markdown for display."""
-    response = llm.invoke(
+    previous_output = state["messages"][-1].content
+    response = await llm.ainvoke(
         [
             {
                 "role": "system",
@@ -108,53 +106,31 @@ def formatter(text: str) -> str:
                     "and decorative elements. Do not use ANSI escape codes or terminal color codes."
                 ),
             },
-            {"role": "user", "content": text},
+            {"role": "user", "content": previous_output},
         ]
     )
-    return response.content
+    return {"messages": [AIMessage(content=response.content)]}
 
 
-@entrypoint()
-def workflow(user_input: str) -> str:
-    """Chain: Writer → Legal Reviewer → Formatter."""
-    draft = writer(user_input).result()
-    reviewed = legal_reviewer(draft).result()
-    return formatter(reviewed).result()
+# ── Build the workflow graph ────────────────────────────────────────
 
+builder = StateGraph(MessagesState)
+builder.add_node("writer", writer)
+builder.add_node("legal_reviewer", legal_reviewer)
+builder.add_node("formatter", formatter)
+builder.add_edge(START, "writer")
+builder.add_edge("writer", "legal_reviewer")
+builder.add_edge("legal_reviewer", "formatter")
+builder.add_edge("formatter", END)
+graph = builder.compile()
 
-# ── Responses protocol handler ──────────────────────────────────────
+# ── Hosted agent entrypoint ─────────────────────────────────────────
 
-app = ResponsesAgentServerHost(
-    options=ResponsesServerOptions(default_fetch_history_count=20)
+host = AzureAIResponsesAgentHost(
+    graph=graph,
+    stream_mode="messages",
+    responses_history_count=20,
 )
 
-
-@app.response_handler
-async def handle_create(
-    request: CreateResponse,
-    context: ResponseContext,
-    cancellation_signal: asyncio.Event,
-):
-    """Run the workflow and stream the response."""
-
-    async def run_workflow():
-        try:
-            current_input = await context.get_input_text() or "Hello!"
-            result = await workflow.ainvoke(current_input)
-
-            if isinstance(result, list):
-                yield "".join(
-                    block.get("text", "") if isinstance(block, dict) else str(block)
-                    for block in result
-                )
-            else:
-                yield result or ""
-        except Exception as exc:
-            logger.exception("run_workflow failed")
-            yield f"[ERROR] {type(exc).__name__}: {exc}"
-
-    return TextResponse(context, request, text=run_workflow())
-
-
 if __name__ == "__main__":
-    app.run()
+    host.run()
