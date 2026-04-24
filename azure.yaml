@@ -55,3 +55,18 @@ hooks:
             shell: sh
             run: infra/hooks/postprovision.sh
             interactive: true
+    prepackage:
+        windows:
+            shell: pwsh
+            run: |
+                Write-Host "Copying shared _vendor/ into service directories..."
+                Copy-Item -Recurse -Force _vendor agents\_vendor
+                Copy-Item -Recurse -Force _vendor workflows\_vendor
+        posix:
+            name: prepackage
+            kind: sh
+            shell: sh
+            run: |
+                echo "Copying shared _vendor/ into service directories..."
+                cp -r _vendor/ agents/_vendor/
+                cp -r _vendor/ workflows/_vendor/

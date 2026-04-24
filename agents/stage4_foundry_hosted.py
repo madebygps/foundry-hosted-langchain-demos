@@ -180,9 +180,9 @@ async def _build_agent():
 # ── Hosted agent entrypoint ─────────────────────────────────────────
 
 
-async def _main():
+def _main():
     """Build the agent and start the AzureAIResponsesAgentHost."""
-    graph = await _build_agent()
+    graph = asyncio.run(_build_agent())
     host = AzureAIResponsesAgentHost(
         graph=graph,
         stream_mode="messages",
@@ -192,4 +192,4 @@ async def _main():
 
 
 if __name__ == "__main__":
-    asyncio.run(_main())
+    _main()

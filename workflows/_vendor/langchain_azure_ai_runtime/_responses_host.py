@@ -497,7 +497,7 @@ async def _stream_messages(
                 config=config,
                 stream_mode=stream_mode,
             ):
-                if not isinstance(chunk, BaseMessage):  # type: ignore[has-type]
+                if not isinstance(chunk, AIMessageChunk):  # type: ignore[has-type]
                     continue
                 await _enqueue_message_content(chunk)  # type: ignore[has-type]
         except asyncio.CancelledError:
@@ -610,7 +610,7 @@ async def _stream_message_events(
                 config=config,
                 stream_mode=stream_mode,
             ):
-                if not isinstance(chunk, BaseMessage):  # type: ignore[has-type]
+                if not isinstance(chunk, AIMessageChunk):  # type: ignore[has-type]
                     continue
 
                 content_parts = (
