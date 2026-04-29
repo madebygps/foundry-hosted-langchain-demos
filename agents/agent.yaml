@@ -1,5 +1,5 @@
 kind: hosted
-name: hosted-langgraph-agent
+name: hosted-langchain-agent
 protocols:
   - protocol: responses
     version: 1.0.0

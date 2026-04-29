@@ -17,13 +17,12 @@ import os
 import re
 from datetime import date
 
-import mcp.types
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from dotenv import load_dotenv
 from langchain.agents import create_agent
+from langchain.tools import tool
 from langchain_azure_ai.callbacks.tracers import enable_auto_tracing
 from langchain_azure_ai.tools import AzureAIProjectToolbox
-from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
 from vendor.langchain_azure_ai_runtime import AzureAIResponsesAgentHost
@@ -35,7 +34,7 @@ logger.setLevel(logging.INFO)
 
 
 def _sanitize_tool_names(tools: list) -> list:
-    """Fix MCP tool names for Responses API compatibility (^[a-zA-Z0-9_-]+$)."""
+    """Fix MCP tool names for Responses API compatibility. Awaiting fix from Foundry Toolbox team."""
     for t in tools:
         sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", t.name)
         if sanitized != t.name:
@@ -58,26 +57,6 @@ TOOLBOX_NAME = os.environ.get("CUSTOM_FOUNDRY_AGENT_TOOLBOX_NAME", "hr-agent-too
 
 _credential = DefaultAzureCredential()
 _token_provider = get_bearer_token_provider(_credential, "https://ai.azure.com/.default")
-
-
-# Workaround: Azure AI Search KB MCP returns resource content with uri: null
-# or uri: "", which fails pydantic AnyUrl validation in the MCP SDK.
-for _cls in [
-    mcp.types.ResourceContents,
-    mcp.types.TextResourceContents,
-    mcp.types.BlobResourceContents,
-]:
-    _cls.model_fields["uri"].annotation = str | None
-    _cls.model_fields["uri"].default = None
-    _cls.model_fields["uri"].metadata = []
-for _cls in [
-    mcp.types.ResourceContents,
-    mcp.types.TextResourceContents,
-    mcp.types.BlobResourceContents,
-    mcp.types.EmbeddedResource,
-    mcp.types.CallToolResult,
-]:
-    _cls.model_rebuild(force=True)
 
 
 @tool
