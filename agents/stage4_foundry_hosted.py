@@ -46,7 +46,7 @@ def _sanitize_tool_names(tools: list) -> list:
 # so the Foundry portal Agent Monitor can identify this agent's traces.
 enable_auto_tracing(
     auto_configure_azure_monitor=True,
-    enable_content_recording=False,
+    enable_content_recording=True,
     trace_all_langgraph_nodes=True,
     agent_id="hr-agent",
 )
